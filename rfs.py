@@ -8,34 +8,35 @@ import subprocess
 import sys
 import tempfile
 
-def parse_to_sydney_time(date_string):
+def parse_to_utc(date_string):
     date_none = datetime.fromisoformat(date_string)
     date_utc = datetime.replace(date_none, tzinfo=tz.UTC)
-    date_syd = datetime.astimezone(date_utc, tz.gettz('Australia/Sydney'))
-    return date_syd
+    return date_utc
 
 p = Path(os.path.realpath("."))
 fs = []
 for f in sorted(p.glob('rfs-*.json.gz')):
     path = str(f)
     date_match = re.match(r'.*/rfs-(.*).json.gz$', path)
-    date = date_match.group(1)
-    fs.append({ "path": path, "date": date })
+    date_str = date_match.group(1)
+    date_syd = datetime.fromisoformat(date_str)
+    date_utc = datetime.astimezone(date_syd, tz.UTC)
+    fs.append({ "path": path, "date": date_utc })
 
 # Find raws that we haven't added yet.
 r = subprocess.run(
     [
         'psql', '-tq',
-        '-c', 'CREATE TEMPORARY TABLE seen_raws(ts TIMESTAMP WITH TIME ZONE)',
+        '-c', 'CREATE TEMPORARY TABLE seen_raws(ts TIMESTAMP WITHOUT TIME ZONE)',
         '-c', 'COPY seen_raws(ts) FROM STDIN',
         '-c', '''
-            SELECT TO_CHAR(ts, 'YYYY-MM-DD"T"HH:MI')
+            SELECT TO_CHAR(ts, 'YYYY-MM-DD"T"HH24:MI')
               FROM (SELECT ts FROM seen_raws
                     EXCEPT (SELECT time_added from rfs.raw)) x
               ORDER BY ts
         ''',
     ],
-    input='\n'.join([f["date"] for f in fs]),
+    input='\n'.join([f["date"].strftime('%Y-%m-%d %H:%M') for f in fs]),
     encoding='ascii',
     capture_output=True,
 )
@@ -43,13 +44,13 @@ if r.returncode != 0:
     print(r.stderr)
     sys.exit(1)
 else:
-    new_dates_syd = [parse_to_sydney_time(ln.strip())
+    new_dates_utc = [parse_to_utc(ln.strip())
                      for ln in r.stdout.rstrip().split('\n')
                      if ln.strip() != '']
-    new_dates_set = set([d.strftime('%Y-%m-%dT%H:%M') for d in new_dates_syd])
+    new_dates_set = set(new_dates_utc)
     new_fs = []
     for f in fs:
-        if f["date"][:-6] in new_dates_set:
+        if f["date"] in new_dates_set:
             new_fs.append(f)
 
 for f in new_fs:
